@@ -23,6 +23,7 @@ if os.environ.get("SDL_VIDEODRIVER") == "kmsdrm":
 import pygame
 
 import geo
+import icons
 from fleet import CORRECTION_S, Fleet
 from link import Link
 from tiles import Tiles
@@ -33,7 +34,6 @@ FPS = 20                 # while the map is moving; planes alone redraw only as 
 MAX_SPEED_KT = 650       # fastest likely aircraft, for how often planes need redrawing
 MOVE_PX = 0.5            # ...redraw once the fastest could have moved this far on screen
 MAX_DRIFT_NM = 12        # how far projection + correction can move a plane from its report
-SPRITE_CACHE = 1500
 MIN_ZOOM = 3
 MAX_RADIUS_NM = 250
 SETTLE_S = 0.8           # after the view stops moving, watch the new area if needed
@@ -50,12 +50,6 @@ ALERT = (255, 59, 78)
 ALT_STOPS = [(0, "#ff7b3a"), (2000, "#ffa733"), (6000, "#ffd23f"), (12000, "#c7e04a"),
              (20000, "#5fd068"), (28000, "#38c9d6"), (36000, "#5b8cff"), (44000, "#b071ff")]
 
-# Nose-up airliner silhouette, right half from nose to tail (fractions of its length).
-_HALF = [(0, -0.5), (0.055, -0.42), (0.06, -0.12), (0.5, 0.1), (0.5, 0.18), (0.06, 0.07),
-         (0.05, 0.33), (0.19, 0.44), (0.19, 0.5), (0, 0.46)]
-SILHOUETTE = _HALF + [(-x, y) for x, y in reversed(_HALF[1:-1])]
-SIZE_BY_CAT = {"A1": 0.75, "B1": 0.7, "B4": 0.7, "A2": 0.85, "A3": 1.0, "A4": 1.05, "A5": 1.2,
-               "A7": 0.8}
 
 
 def _rgb(h):
@@ -179,7 +173,7 @@ class App:
         self.scaled: dict = {}       # tiles resized for the current fractional zoom
         self.scaled_size = None
         self.labels: dict = {}
-        self.sprites: dict = {}      # (color, size, heading step) -> pre-drawn plane icon
+        self.icons = icons.Icons(HALO)
         self.drawn_at = 0.0
         self.snapshot_at = 0.0
         self.pill = (None, None)     # (text, surface)
@@ -326,8 +320,11 @@ class App:
     def draw_planes(self):
         v, screen = self.view, self.screen
         now = self.fleet.now()
-        length = max(14.0, min(40.0, 22 + 3.5 * (v.z - 6)))
-        show_labels = v.z >= 9
+        # Icons keep their size during a pinch (redrawing them all every frame would
+        # stutter) and take the new zoom's size once it settles.
+        icon_z = self.pinch[1] if self.pinch else v.z
+        px_per_unit = 0.5 * icons.icon_size(icon_z)   # the browser draws them at pixelRatio 2
+        show_labels = v.z >= 8.5
         # Where a plane is drawn is never far from where it was reported, so skip the
         # projection maths for those well off screen.
         margin = 40 + MAX_DRIFT_NM * self.px_per_nm()
@@ -347,37 +344,18 @@ class App:
             color = p.get("color")
             if color is None:   # fixed until the next snapshot replaces the plane
                 color = p["color"] = plane_color(p)
-            if (p.get("cat") or "").startswith("C"):   # ground vehicles and obstacles
-                pygame.draw.circle(screen, HALO, (sx, sy), 5)
-                pygame.draw.circle(screen, color, (sx, sy), 4)
-                continue
-            size = round(length * SIZE_BY_CAT.get(p.get("cat"), 0.9))
-            sprite = self.sprite(color, size, round((p.get("trk") or 0) / 3) % 120)
-            half = sprite.get_width() / 2
-            blit(sprite, (sx - half, sy - half))
+            shape = p.get("shape")
+            if shape is None:
+                shape = p["shape"] = icons.shape_for(p.get("type"), p.get("cat"))
+            sprite = self.icons.get(shape, px_per_unit * icons.SHAPE_SCALE[shape], color, p.get("trk"))
+            w, h = sprite.get_size()
+            blit(sprite, (sx - w / 2, sy - h / 2))
             if show_labels:
                 text = p.get("cs") or p.get("reg") or ""
                 if text:
                     label = self.label(text)
-                    screen.blit(label, (sx - label.get_width() / 2, sy + size * 0.6))
+                    screen.blit(label, (sx - label.get_width() / 2, sy + 11))
         return len(visible)
-
-    def sprite(self, color, size, step):
-        """A plane icon: `size` px long, heading `step` * 3 degrees, drawn once and reused."""
-        key = (color, size, step)
-        surf = self.sprites.get(key)
-        if surf is None:
-            if len(self.sprites) > SPRITE_CACHE:
-                self.sprites.clear()
-            d = size + 4
-            surf = pygame.Surface((d, d), pygame.SRCALPHA)
-            t = math.radians(step * 3)
-            c, s = math.cos(t) * size, math.sin(t) * size
-            pts = [(d / 2 + x * c - y * s, d / 2 + x * s + y * c) for x, y in SILHOUETTE]
-            pygame.draw.polygon(surf, color, pts)
-            pygame.draw.aalines(surf, HALO, True, pts)
-            self.sprites[key] = surf = surf.convert_alpha()
-        return surf
 
     def label(self, text):
         surf = self.labels.get(text)
