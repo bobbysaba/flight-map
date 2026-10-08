@@ -19,21 +19,34 @@ import pygame
 
 log = logging.getLogger("flightmap.native")
 
-# Esri's Dark Gray Canvas: a base layer plus a transparent label layer on top. No key
-# needed. (CARTO's dark tiles, the usual free choice, now require an API key.)
+# CARTO's dark basemap (needs a free key) or, without one, Esri's Dark Gray Canvas:
+# a base layer plus a transparent label layer drawn on top.
 _ESRI = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/{}/MapServer/tile/{{z}}/{{y}}/{{x}}"
-LAYERS = [_ESRI.format("World_Dark_Gray_Base"), _ESRI.format("World_Dark_Gray_Reference")]
-ATTRIBUTION = "Esri, HERE, Garmin, © OpenStreetMap contributors"
-MAX_ZOOM = 16
+SOURCES = {
+    "carto": {
+        "layers": ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png?key={key}"],
+        "attribution": "© OpenStreetMap contributors © CARTO",
+        "max_zoom": 18,
+    },
+    "esri": {
+        "layers": [_ESRI.format("World_Dark_Gray_Base"), _ESRI.format("World_Dark_Gray_Reference")],
+        "attribution": "Esri, HERE, Garmin, © OpenStreetMap contributors",
+        "max_zoom": 16,
+    },
+}
 MEMORY_TILES = 96          # 256×256×4 bytes each: ~24 MB
 WORKERS = 4
 RETRY_AFTER_S = 20
 
 
 class Tiles:
-    def __init__(self, user_agent: str, cache_dir: Path | None = None):
+    def __init__(self, user_agent: str, carto_key: str = ""):
+        name = "carto" if carto_key else "esri"
+        src = SOURCES[name]
+        self.layers = [url.replace("{key}", carto_key) for url in src["layers"]]
+        self.attribution, self.max_zoom = src["attribution"], src["max_zoom"]
         base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-        self.dir = cache_dir or Path(base) / "flightmap" / "tiles"
+        self.dir = Path(base) / "flightmap" / "tiles" / name
         self.user_agent = user_agent
         self.mem: OrderedDict[tuple, pygame.Surface] = OrderedDict()
         self.wanted: set[tuple] = set()
@@ -109,7 +122,7 @@ class Tiles:
         if path.exists():
             return pygame.image.load(str(path))
         surf = None
-        for url in LAYERS:
+        for url in self.layers:
             req = urllib.request.Request(url.format(z=z, x=x, y=y),
                                          headers={"User-Agent": self.user_agent})
             with urllib.request.urlopen(req, timeout=10) as resp:

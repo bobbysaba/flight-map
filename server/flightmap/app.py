@@ -58,6 +58,8 @@ def create_app(cfg: Config, web_dir: Path = WEB_DIR) -> FastAPI:
         return {
             "start": {"lat": cfg.start_lat, "lon": cfg.start_lon, "zoom": cfg.start_zoom},
             "poll_interval_s": cfg.poll_interval_s,
+            # For the native display's raster tiles (the browser uses keyless vector tiles).
+            "carto_key": cfg.carto_key,
         }
 
     @app.websocket("/ws")

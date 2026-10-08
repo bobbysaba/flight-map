@@ -11,6 +11,9 @@ db_path = "/var/lib/flight-map/flightmap.db"
 start_lat = 39.83
 start_lon = -98.58
 start_zoom = 8
+# Native display only (Pi Zero): free CARTO key for its dark map tiles, from
+# https://carto.com/basemaps/apikey. Blank uses Esri's Dark Gray tiles instead.
+carto_key = ""
 
 [live]
 # Seconds between refreshes of the active area.

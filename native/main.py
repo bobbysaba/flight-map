@@ -18,7 +18,7 @@ import pygame
 import geo
 from fleet import Fleet
 from link import Link
-from tiles import ATTRIBUTION, MAX_ZOOM, Tiles
+from tiles import Tiles
 
 log = logging.getLogger("flightmap.native")
 
@@ -89,6 +89,8 @@ def rss_mb():
 class View:
     """Where the map is looking: centre in world units (0..1) and a fractional zoom."""
 
+    max_zoom = 16   # set from the tile source
+
     def __init__(self, w, h, lat, lon, zoom):
         self.w, self.h = w, h
         self.cx, self.cy = geo.to_world(lat, lon)
@@ -119,7 +121,7 @@ class View:
     def zoom_about(self, z, sx, sy, anchor=None):
         """Zoom to `z` keeping world point `anchor` (default: what's under sx, sy) at sx, sy."""
         ax, ay = anchor or self.to_world(sx, sy)
-        self.z = max(MIN_ZOOM, min(MAX_ZOOM, z))
+        self.z = max(MIN_ZOOM, min(self.max_zoom, z))
         s = self.scale
         self.cx = ax - (sx - self.w / 2) / s
         self.cy = ay - (sy - self.h / 2) / s
@@ -151,9 +153,10 @@ class App:
         w, h = self.screen.get_size()
         log.info("screen %dx%d, driver %s", w, h, pygame.display.get_driver())
 
+        self.tiles = Tiles("flight-map-native/0.1 (personal kiosk)", self.cfg.get("carto_key", ""))
+        View.max_zoom = self.tiles.max_zoom
         start = self.cfg["start"]
         self.view = View(w, h, start["lat"], start["lon"], round(start["zoom"]))
-        self.tiles = Tiles(user_agent="flight-map-native/0.1 (personal kiosk)")
         self.fleet = Fleet()
         self.status = {"ok": True}
         self.clock = pygame.time.Clock()
@@ -176,7 +179,7 @@ class App:
         self.btn_in = pygame.Rect(12, h - 2 * bw - 20, bw, bw)
         self.btn_out = pygame.Rect(12, h - bw - 12, bw, bw)
         self.btn_home = pygame.Rect(w - bw - 12, 12, bw, bw)
-        self.attribution = self.small.render(ATTRIBUTION, True, MUTED)
+        self.attribution = self.small.render(self.tiles.attribution, True, MUTED)
 
         self.stats = {"since": time.monotonic(), "frames": 0, "work": 0.0, "worst": 0.0, "drawn": 0}
         self.running = True
@@ -236,7 +239,7 @@ class App:
         v = self.view
         self.map_key = v.key()
         self.map.fill(BG)
-        zi = max(MIN_ZOOM, min(MAX_ZOOM, round(v.z)))
+        zi = max(MIN_ZOOM, min(v.max_zoom, round(v.z)))
         n = 2 ** zi
         size = geo.TILE * 2 ** (v.z - zi)          # a tile's size on screen
         exact = abs(size - geo.TILE) < 0.01

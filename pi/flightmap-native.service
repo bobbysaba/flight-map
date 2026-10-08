@@ -18,6 +18,7 @@ TTYVHangup=yes
 TTYVTDisallocate=yes
 StandardInput=tty-fail
 StandardOutput=journal
+StandardError=journal
 UtmpIdentifier=tty1
 UtmpMode=user
 Environment=SDL_VIDEODRIVER=kmsdrm

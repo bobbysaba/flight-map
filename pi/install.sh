@@ -29,7 +29,8 @@ systemctl stop flightmap-native flightmap 2>/dev/null || true
 apt-get update -qq
 apt-get install -y -qq python3-venv curl
 if [ "$MODE" = native ]; then
-  apt-get install -y -qq python3-pygame python3-websockets
+  # SDL draws through Mesa's EGL/GBM, which Pi OS Lite doesn't always have.
+  apt-get install -y -qq python3-pygame python3-websockets libegl1 libgles2 libegl-mesa0 libgbm1
 elif [ "$MODE" != server ]; then
   command -v chromium >/dev/null || command -v chromium-browser >/dev/null \
     || apt-get install -y -qq chromium || apt-get install -y -qq chromium-browser

@@ -23,6 +23,7 @@ class Config:
     start_lat: float = 39.83
     start_lon: float = -98.58
     start_zoom: float = 7.0
+    carto_key: str = ""
     # [live]
     poll_interval_s: float = 5.0
     request_timeout_s: float = 8.0
@@ -61,6 +62,7 @@ def load(path: Path = DEFAULT_PATH) -> Config:
         start_lat=float(map_.get("start_lat", d.start_lat)),
         start_lon=float(map_.get("start_lon", d.start_lon)),
         start_zoom=float(map_.get("start_zoom", d.start_zoom)),
+        carto_key=map_.get("carto_key", d.carto_key).strip(),
         poll_interval_s=float(live.get("poll_interval_s", d.poll_interval_s)),
         request_timeout_s=float(live.get("request_timeout_s", d.request_timeout_s)),
         providers=list(live.get("providers", d.providers)),
