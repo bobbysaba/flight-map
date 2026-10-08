@@ -78,7 +78,7 @@ cached on disk in `~/.cache/flightmap/tiles`.
 
 ```sh
 PI_HOST=flightzero ./deploy.sh install --native
-ssh flightzero journalctl -u flightmap-native -f    # logs, including fps/memory stats every 10 s
+ssh flightzero journalctl -t flightmap-native -f    # logs, including fps/memory stats every 10 s
 ```
 
 So far: map, live planes, drag, pinch-zoom, +/−, home. Not yet: the status card,

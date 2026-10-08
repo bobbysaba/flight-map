@@ -10,19 +10,30 @@ Pi Zero 2 W. It talks to the same flight map service over the same WebSocket.
 import argparse
 import logging
 import math
+import os
 import sys
 import time
+
+if os.environ.get("SDL_VIDEODRIVER") == "kmsdrm":
+    # SDL otherwise picks its desktop OpenGL renderer, whose calls all fail on the Pi's
+    # OpenGL ES-only GPU: the screen silently keeps showing the console.
+    os.environ.setdefault("SDL_RENDER_DRIVER", "opengles2")
+    os.environ.setdefault("SDL_FRAMEBUFFER_ACCELERATION", "opengles2")
 
 import pygame
 
 import geo
-from fleet import Fleet
+from fleet import CORRECTION_S, Fleet
 from link import Link
 from tiles import Tiles
 
 log = logging.getLogger("flightmap.native")
 
-FPS = 20                 # same as the browser version: plenty for planes, easy on the CPU
+FPS = 20                 # while the map is moving; planes alone redraw only as often as they move
+MAX_SPEED_KT = 650       # fastest likely aircraft, for how often planes need redrawing
+MOVE_PX = 0.5            # ...redraw once the fastest could have moved this far on screen
+MAX_DRIFT_NM = 12        # how far projection + correction can move a plane from its report
+SPRITE_CACHE = 1500
 MIN_ZOOM = 3
 MAX_RADIUS_NM = 250
 SETTLE_S = 0.8           # after the view stops moving, watch the new area if needed
@@ -142,7 +153,8 @@ class App:
         self.link = Link(args.server)
         self.cfg = self.link.config()
 
-        pygame.init()
+        pygame.display.init()   # not pygame.init(): that also starts audio, which we don't use
+        pygame.font.init()
         pygame.display.set_caption("Flight map")
         if args.windowed:
             w, h = (int(v) for v in args.windowed.lower().split("x"))
@@ -167,6 +179,9 @@ class App:
         self.scaled: dict = {}       # tiles resized for the current fractional zoom
         self.scaled_size = None
         self.labels: dict = {}
+        self.sprites: dict = {}      # (color, size, heading step) -> pre-drawn plane icon
+        self.drawn_at = 0.0
+        self.snapshot_at = 0.0
         self.pill = (None, None)     # (text, surface)
 
         self.pointers: dict = {}     # finger id -> (x, y)
@@ -181,7 +196,7 @@ class App:
         self.btn_home = pygame.Rect(w - bw - 12, 12, bw, bw)
         self.attribution = self.small.render(self.tiles.attribution, True, MUTED)
 
-        self.stats = {"since": time.monotonic(), "frames": 0, "work": 0.0, "worst": 0.0, "drawn": 0}
+        self.reset_stats()
         self.running = True
         self.link.start()
         self.set_area(self.view_area())
@@ -201,28 +216,48 @@ class App:
         self.maybe_set_area()
 
         arrived = self.tiles.collect()
-        if arrived or self.view.key() != self.map_key:
+        moved = self.view.key() != self.map_key
+        if arrived or moved:
             self.render_map()
+        now = time.monotonic()
+        # Planes move slowly on screen except when zoomed far in, so between gestures
+        # only redraw once one could have shifted by MOVE_PX.
+        if not (arrived or moved or now - self.drawn_at >= self.plane_interval(now)):
+            return
+        self.drawn_at = now
         self.screen.blit(self.map, (0, 0))
         drawn = self.draw_planes()
         self.draw_ui()
         pygame.display.flip()
         self.record(time.perf_counter() - started, drawn)
 
+    def plane_interval(self, now):
+        nm_per_s = MAX_SPEED_KT / 3600
+        if now - self.snapshot_at < CORRECTION_S:   # corrections easing in move planes too
+            nm_per_s += self.fleet.max_correction_nm / CORRECTION_S
+        return max(1 / FPS, min(1.0, MOVE_PX / (nm_per_s * self.px_per_nm())))
+
+    def px_per_nm(self):
+        lat, _ = self.view.latlon()
+        return self.view.scale / (21600 * max(0.05, math.cos(math.radians(lat))))
+
+    def reset_stats(self):
+        self.stats = {"since": time.monotonic(), "cpu": time.process_time(),
+                      "frames": 0, "work": 0.0, "worst": 0.0}
+
     def record(self, work, drawn):
         s = self.stats
         s["frames"] += 1
         s["work"] += work
         s["worst"] = max(s["worst"], work)
-        s["drawn"] = drawn
         elapsed = time.monotonic() - s["since"]
         if elapsed >= STATS_EVERY_S:
-            log.info("stats: %.1f fps, frame %.1f ms avg / %.1f ms worst, %d planes drawn of %d, "
-                     "%d tiles in memory, %.0f MB RSS",
+            log.info("stats: %.1f frames/s drawn, frame %.1f ms avg / %.1f ms worst, CPU %.0f%%, "
+                     "%d planes drawn of %d, %d tiles in memory, %.0f MB RSS",
                      s["frames"] / elapsed, 1000 * s["work"] / s["frames"], 1000 * s["worst"],
+                     100 * (time.process_time() - s["cpu"]) / elapsed,
                      drawn, len(self.fleet.planes), len(self.tiles.mem), rss_mb())
-            self.stats = {"since": time.monotonic(), "frames": 0, "work": 0.0, "worst": 0.0,
-                          "drawn": drawn}
+            self.reset_stats()
 
     def drain_inbox(self):
         while not self.link.inbox.empty():
@@ -230,6 +265,7 @@ class App:
             if msg.get("type") == "snapshot":
                 self.fleet.update(msg)
                 self.status = {"ok": True}
+                self.snapshot_at = time.monotonic()
             elif msg.get("type") == "status":
                 self.status = msg
 
@@ -292,32 +328,56 @@ class App:
         now = self.fleet.now()
         length = max(14.0, min(40.0, 22 + 3.5 * (v.z - 6)))
         show_labels = v.z >= 9
+        # Where a plane is drawn is never far from where it was reported, so skip the
+        # projection maths for those well off screen.
+        margin = 40 + MAX_DRIFT_NM * self.px_per_nm()
         visible = []
         for p in self.fleet.planes.values():
+            rx, ry = v.to_screen(*p["world"])
+            if not (-margin < rx < v.w + margin and -margin < ry < v.h + margin):
+                continue
             lat, lon = self.fleet.position(p, now)
             sx, sy = v.to_screen(*geo.to_world(lat, lon))
             if -40 < sx < v.w + 40 and -40 < sy < v.h + 40:
                 visible.append((p.get("alt") or 0, sx, sy, p))
         visible.sort(key=lambda t: t[0])   # higher aircraft on top
 
+        blit = screen.blit
         for _, sx, sy, p in visible:
-            color = plane_color(p)
+            color = p.get("color")
+            if color is None:   # fixed until the next snapshot replaces the plane
+                color = p["color"] = plane_color(p)
             if (p.get("cat") or "").startswith("C"):   # ground vehicles and obstacles
                 pygame.draw.circle(screen, HALO, (sx, sy), 5)
                 pygame.draw.circle(screen, color, (sx, sy), 4)
                 continue
-            size = length * SIZE_BY_CAT.get(p.get("cat"), 0.9)
-            t = math.radians(p.get("trk") or 0)
-            c, s = math.cos(t) * size, math.sin(t) * size
-            pts = [(sx + x * c - y * s, sy + x * s + y * c) for x, y in SILHOUETTE]
-            pygame.draw.polygon(screen, color, pts)
-            pygame.draw.aalines(screen, HALO, True, pts)
+            size = round(length * SIZE_BY_CAT.get(p.get("cat"), 0.9))
+            sprite = self.sprite(color, size, round((p.get("trk") or 0) / 3) % 120)
+            half = sprite.get_width() / 2
+            blit(sprite, (sx - half, sy - half))
             if show_labels:
                 text = p.get("cs") or p.get("reg") or ""
                 if text:
                     label = self.label(text)
                     screen.blit(label, (sx - label.get_width() / 2, sy + size * 0.6))
         return len(visible)
+
+    def sprite(self, color, size, step):
+        """A plane icon: `size` px long, heading `step` * 3 degrees, drawn once and reused."""
+        key = (color, size, step)
+        surf = self.sprites.get(key)
+        if surf is None:
+            if len(self.sprites) > SPRITE_CACHE:
+                self.sprites.clear()
+            d = size + 4
+            surf = pygame.Surface((d, d), pygame.SRCALPHA)
+            t = math.radians(step * 3)
+            c, s = math.cos(t) * size, math.sin(t) * size
+            pts = [(d / 2 + x * c - y * s, d / 2 + x * s + y * c) for x, y in SILHOUETTE]
+            pygame.draw.polygon(surf, color, pts)
+            pygame.draw.aalines(surf, HALO, True, pts)
+            self.sprites[key] = surf = surf.convert_alpha()
+        return surf
 
     def label(self, text):
         surf = self.labels.get(text)

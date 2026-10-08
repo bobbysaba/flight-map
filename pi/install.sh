@@ -69,6 +69,7 @@ elif [ "$MODE" = native ]; then
   sed "s/@USER@/$DESKTOP_USER/" "$APP/pi/flightmap-native.service" > /etc/systemd/system/flightmap-native.service
   systemctl daemon-reload
   systemctl enable flightmap-native.service
+  systemctl restart flightmap-native.service   # stopped above while packages installed
   systemctl disable flightmap-kiosk.service 2>/dev/null || true
   if command -v raspi-config >/dev/null; then
     raspi-config nonint do_boot_behaviour B1   # console, no autologin

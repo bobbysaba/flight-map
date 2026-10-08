@@ -19,6 +19,9 @@ TTYVTDisallocate=yes
 StandardInput=tty-fail
 StandardOutput=journal
 StandardError=journal
+# The login session moves the process out of this unit, so `journalctl -u` misses its
+# output; tag it instead: journalctl -t flightmap-native
+SyslogIdentifier=flightmap-native
 UtmpIdentifier=tty1
 UtmpMode=user
 Environment=SDL_VIDEODRIVER=kmsdrm
