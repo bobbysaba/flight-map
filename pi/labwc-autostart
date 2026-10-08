@@ -1,0 +1,3 @@
+# Installed to ~/.config/labwc/autostart by pi/install.sh.
+# Boots straight into the flight map. Delete this file to get the normal desktop back.
+/opt/flight-map/app/pi/kiosk.sh &

@@ -1,0 +1,20 @@
+[Unit]
+Description=Flight map service (live aircraft + status card APIs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=flightmapd
+Group=flightmapd
+WorkingDirectory=/opt/flight-map/app/server
+ExecStart=/opt/flight-map/venv/bin/python -m flightmap --config /etc/flight-map/config.toml
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/flight-map
+
+[Install]
+WantedBy=multi-user.target

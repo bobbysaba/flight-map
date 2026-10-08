@@ -1,0 +1,31 @@
+# Pi OS Lite only: runs the kiosk in cage (a single-app Wayland compositor) on tty1,
+# with no desktop session. Installed by pi/install.sh, which fills in the user.
+[Unit]
+Description=Flight map kiosk (cage + Chromium on tty1)
+After=systemd-user-sessions.service plymouth-quit-wait.service getty@tty1.service
+After=dbus.socket systemd-logind.service flightmap.service
+Wants=dbus.socket systemd-logind.service
+Conflicts=getty@tty1.service
+ConditionPathExists=/dev/tty1
+
+[Service]
+User=@USER@
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+UtmpIdentifier=tty1
+UtmpMode=user
+# cage always draws a pointer, even on a touch screen, from the cursor theme named
+# "default". This path holds a "default" theme whose pointers are invisible.
+Environment=XCURSOR_PATH=/usr/share/flightmap/cursors
+ExecStart=/usr/bin/cage -- /opt/flight-map/app/pi/kiosk.sh
+Restart=always
+RestartSec=3
+# Chromium can take the full default 90 s to exit; there's nothing to save, so don't wait.
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

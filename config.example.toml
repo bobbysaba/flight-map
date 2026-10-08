@@ -1,0 +1,35 @@
+# flight-map configuration. Lives at /etc/flight-map/config.toml on the Pi.
+# After editing: `sudo systemctl restart flightmap`
+
+[server]
+host = "127.0.0.1"        # only the Pi's own screen can reach it; "0.0.0.0" to view from other devices
+port = 8080
+db_path = "/var/lib/flight-map/flightmap.db"
+
+[map]
+# Where the map opens at boot.
+start_lat = 39.83
+start_lon = -98.58
+start_zoom = 8
+
+[live]
+# Seconds between refreshes of the active area.
+poll_interval_s = 5
+request_timeout_s = 8
+# Tried in this order; on errors we fall through to the next.
+providers = ["airplaneslive", "adsbfi", "adsblol"]
+
+[photos]
+# planespotters.net requires a way to contact you in each request
+# (a URL or email). Leave blank to turn photos off.
+contact = ""
+
+[aeroapi]
+# FlightAware AeroAPI key (Personal tier). Blank turns off "Get flight times".
+api_key = ""
+# Stop making AeroAPI calls once this month's spending reaches this (USD).
+# Feeders get $10/month free; the margin covers a lookup in flight when we sync.
+stop_at = 9.50
+# Price of one /flights/{ident} lookup on the Personal tier ($0.005 as of Oct 2026),
+# used between hourly syncs with FlightAware's own usage figure.
+cost_per_call = 0.005
