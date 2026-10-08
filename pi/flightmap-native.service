@@ -1,0 +1,31 @@
+# The native display (native/main.py) on tty1: pygame drawing straight to the screen
+# through KMS, with no compositor or browser. For small boards like the Pi Zero 2 W.
+# Installed by `pi/install.sh <user> --native`, which fills in the user.
+[Unit]
+Description=Flight map native display (pygame on tty1)
+After=systemd-user-sessions.service plymouth-quit-wait.service getty@tty1.service
+After=dbus.socket systemd-logind.service flightmap.service
+Wants=dbus.socket systemd-logind.service
+Conflicts=getty@tty1.service
+ConditionPathExists=/dev/tty1
+
+[Service]
+User=@USER@
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/flight-map/app/native/main.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

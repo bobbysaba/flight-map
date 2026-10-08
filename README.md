@@ -69,6 +69,21 @@ back on the screen: `sudo systemctl disable --now flightmap-kiosk`.
 On the desktop image the map starts from the desktop session instead. To get the normal
 desktop back: delete `~/.config/labwc/autostart` and reboot.
 
+## Native display (Pi Zero 2 W, prototype)
+
+`native/` draws the map with pygame straight to the screen (KMS), with no browser or
+compositor, for boards too small for Chromium. It uses the same service and WebSocket
+as the browser display. Map tiles are Esri's Dark Gray Canvas (raster, no key needed),
+cached on disk in `~/.cache/flightmap/tiles`.
+
+```sh
+PI_HOST=flightzero ./deploy.sh install --native
+ssh flightzero journalctl -u flightmap-native -f    # logs, including fps/memory stats every 10 s
+```
+
+So far: map, live planes, drag, pinch-zoom, +/−, home. Not yet: the status card,
+"Search here" (the live area follows the view automatically), trails.
+
 ## Config (`/etc/flight-map/config.toml`)
 
 | Setting | What it does |

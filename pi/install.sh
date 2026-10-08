@@ -2,6 +2,7 @@
 # Install or update flight-map on the Pi. Run as root from /opt/flight-map/app:
 #   sudo bash pi/install.sh <desktop-user>
 #   sudo bash pi/install.sh <desktop-user> --server-only   # the service, no screen/kiosk
+#   sudo bash pi/install.sh <desktop-user> --native        # pygame display instead of Chromium
 set -euo pipefail
 
 APP=/opt/flight-map/app
@@ -17,13 +18,17 @@ DESKTOP_HOME=$(getent passwd "$DESKTOP_USER" | cut -d: -f6)
 # Pi OS with desktop runs the kiosk inside the desktop session (labwc); Pi OS Lite
 # has no desktop, so the kiosk gets its own compositor (cage) on tty1 instead.
 # --server-only skips the screen entirely (e.g. to measure the service on its own).
+# --native draws the map with pygame instead of Chromium (for small boards).
 if [ "${2:-}" = --server-only ]; then MODE=server
+elif [ "${2:-}" = --native ]; then MODE=native
 elif command -v labwc >/dev/null; then MODE=desktop; else MODE=lite; fi
 
 echo "==> packages ($MODE)"
 apt-get update -qq
 apt-get install -y -qq python3-venv curl
-if [ "$MODE" != server ]; then
+if [ "$MODE" = native ]; then
+  apt-get install -y -qq python3-pygame python3-websockets
+elif [ "$MODE" != server ]; then
   command -v chromium >/dev/null || command -v chromium-browser >/dev/null \
     || apt-get install -y -qq chromium || apt-get install -y -qq chromium-browser
 fi
@@ -56,6 +61,16 @@ systemctl restart flightmap.service
 
 if [ "$MODE" = server ]; then
   echo "==> no kiosk (--server-only)"
+elif [ "$MODE" = native ]; then
+  echo "==> native display for $DESKTOP_USER"
+  sed "s/@USER@/$DESKTOP_USER/" "$APP/pi/flightmap-native.service" > /etc/systemd/system/flightmap-native.service
+  systemctl daemon-reload
+  systemctl enable flightmap-native.service
+  systemctl disable flightmap-kiosk.service 2>/dev/null || true
+  if command -v raspi-config >/dev/null; then
+    raspi-config nonint do_boot_behaviour B1   # console, no autologin
+    raspi-config nonint do_blanking 1          # never blank the screen
+  fi
 else
   echo "==> kiosk for $DESKTOP_USER ($MODE)"
   chmod 755 "$APP/pi/kiosk.sh"
