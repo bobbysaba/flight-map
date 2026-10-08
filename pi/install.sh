@@ -24,6 +24,8 @@ elif [ "${2:-}" = --native ]; then MODE=native
 elif command -v labwc >/dev/null; then MODE=desktop; else MODE=lite; fi
 
 echo "==> packages ($MODE)"
+# On a 512 MB board apt and a running service together can run the Pi out of memory.
+systemctl stop flightmap-native flightmap 2>/dev/null || true
 apt-get update -qq
 apt-get install -y -qq python3-venv curl
 if [ "$MODE" = native ]; then
