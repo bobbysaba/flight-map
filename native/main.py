@@ -22,8 +22,11 @@ if os.environ.get("SDL_VIDEODRIVER") == "kmsdrm":
 
 import pygame
 
+import card as card_mod
 import geo
 import icons
+import ui
+from card import Card
 from fleet import CORRECTION_S, Fleet
 from link import Link
 from tiles import Tiles
@@ -36,15 +39,13 @@ MOVE_PX = 0.5            # ...redraw once the fastest could have moved this far 
 MAX_DRIFT_NM = 12        # how far projection + correction can move a plane from its report
 MIN_ZOOM = 3
 MAX_RADIUS_NM = 250
-SETTLE_S = 0.8           # after the view stops moving, watch the new area if needed
+SETTLE_S = 0.3           # after the view stops moving, check whether to offer "Search here"
 TAP_PX = 12
+HIT_PX = 16              # generous tap target around each plane
 STATS_EVERY_S = 10
 
-BG = (14, 18, 24)
+BG = ui.BG
 HALO = (6, 8, 11)
-TEXT = (199, 211, 223)
-MUTED = (140, 150, 163)
-PANEL = (22, 27, 35)
 GROUND = (139, 149, 163)
 ALERT = (255, 59, 78)
 ALT_STOPS = [(0, "#ff7b3a"), (2000, "#ffa733"), (6000, "#ffd23f"), (12000, "#c7e04a"),
@@ -166,17 +167,25 @@ class App:
         self.fleet = Fleet()
         self.status = {"ok": True}
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 22)
-        self.small = pygame.font.Font(None, 16)
         self.map = pygame.Surface((w, h)).convert()
         self.map_key = None
         self.scaled: dict = {}       # tiles resized for the current fractional zoom
         self.scaled_size = None
-        self.labels: dict = {}
         self.icons = icons.Icons(HALO)
+        self.icons_selected = icons.Icons((255, 255, 255), halo_px=2.2)
+        self.card = Card(args.server, h)
+        self.selected = None         # hex of the tapped aircraft
+        self.trail = []              # its track: (t, world x, world y, alt)
+        self.trail_loaded = False    # merged in the service's history yet?
+        self.visible = []            # (x, y, plane) drawn last frame, for tap hit-testing
+        self.dirty = True            # something besides the map or planes changed
+        self.tick_at = 0.0
+        self.drag_card = False
+        self.search_shown = False
+        self.area_shown = False
+        self.area_ring = []
         self.drawn_at = 0.0
         self.snapshot_at = 0.0
-        self.pill = (None, None)     # (text, surface)
 
         self.pointers: dict = {}     # finger id -> (x, y)
         self.pinch = None            # (start distance, start zoom, world anchor)
@@ -187,8 +196,9 @@ class App:
         bw = 44
         self.btn_in = pygame.Rect(12, h - 2 * bw - 20, bw, bw)
         self.btn_out = pygame.Rect(12, h - bw - 12, bw, bw)
-        self.btn_home = pygame.Rect(w - bw - 12, 12, bw, bw)
-        self.attribution = self.small.render(self.tiles.attribution, True, MUTED)
+        self.btn_home = pygame.Rect(12, h - 3 * bw - 40, bw, bw)
+        self.btn_search = pygame.Rect(0, 12, 0, 0)
+        self.attribution = ui.text(self.tiles.attribution, 10, ui.MUTED)
 
         self.reset_stats()
         self.running = True
@@ -207,21 +217,33 @@ class App:
         for e in pygame.event.get():
             self.handle(e)
         self.drain_inbox()
-        self.maybe_set_area()
+        self.maybe_offer_search()
+        if self.card.poll():
+            self.dirty = True
+        now = time.monotonic()
+        if now - self.tick_at >= 1:
+            self.tick_at = now
+            if self.selected:
+                self.update_selected()
 
         arrived = self.tiles.collect()
         moved = self.view.key() != self.map_key
         if arrived or moved:
             self.render_map()
-        now = time.monotonic()
         # Planes move slowly on screen except when zoomed far in, so between gestures
         # only redraw once one could have shifted by MOVE_PX.
-        if not (arrived or moved or now - self.drawn_at >= self.plane_interval(now)):
+        if not (arrived or moved or self.dirty or now - self.drawn_at >= self.plane_interval(now)):
             return
         self.drawn_at = now
+        self.dirty = False
         self.screen.blit(self.map, (0, 0))
+        if self.area_shown:
+            ui.dashed(self.screen, (73, 85, 102), self.ring_points(), 1, 3, 5)
+        if self.selected:
+            self.draw_selection()
         drawn = self.draw_planes()
         self.draw_ui()
+        self.card.draw(self.screen)
         pygame.display.flip()
         self.record(time.perf_counter() - started, drawn)
 
@@ -338,6 +360,11 @@ class App:
             if -40 < sx < v.w + 40 and -40 < sy < v.h + 40:
                 visible.append((p.get("alt") or 0, sx, sy, p))
         visible.sort(key=lambda t: t[0])   # higher aircraft on top
+        chosen = next((t for t in visible if t[3]["hex"] == self.selected), None)
+        if chosen:   # the selected aircraft goes on top of everything
+            visible.remove(chosen)
+            visible.append(chosen)
+        self.visible = [(sx, sy, p) for _, sx, sy, p in visible]
 
         blit = screen.blit
         for _, sx, sy, p in visible:
@@ -347,7 +374,8 @@ class App:
             shape = p.get("shape")
             if shape is None:
                 shape = p["shape"] = icons.shape_for(p.get("type"), p.get("cat"))
-            sprite = self.icons.get(shape, px_per_unit * icons.SHAPE_SCALE[shape], color, p.get("trk"))
+            source = self.icons_selected if p["hex"] == self.selected else self.icons
+            sprite = source.get(shape, px_per_unit * icons.SHAPE_SCALE[shape], color, p.get("trk"))
             w, h = sprite.get_size()
             blit(sprite, (sx - w / 2, sy - h / 2))
             if show_labels:
@@ -358,50 +386,108 @@ class App:
         return len(visible)
 
     def label(self, text):
-        surf = self.labels.get(text)
-        if surf is None:
-            if len(self.labels) > 600:
-                self.labels.clear()
-            surf = self.labels[text] = self.small.render(text, True, MUTED)
-        return surf
+        return ui.text(text, 10, ui.MUTED)
+
+    # ------------------------------------------------------------ selected aircraft
+
+    def select(self, hex_):
+        self.selected = hex_
+        self.trail = []
+        self.trail_loaded = False
+        self.dirty = True
+        plane = self.fleet.planes.get(hex_) if hex_ else None
+        if not plane:
+            self.selected = None
+            self.card.hide()
+            return
+        self.card.show(plane, self.fleet.position(plane))
+
+    def update_selected(self):
+        """Once a second: refresh the card's live values and extend the trail."""
+        plane = self.fleet.planes.get(self.selected)
+        if not plane:
+            self.card.update_live(None, None)
+            self.dirty = True
+            return
+        lat, lon = self.fleet.position(plane)
+        self.card.update_live(plane, (lat, lon))
+        if not self.trail_loaded and self.card.details is not None:
+            # The service's history arrives with the card details; keep any points seen since.
+            history = [(t, *geo.to_world(la, lo), alt) for t, la, lo, alt in self.card.trail]
+            last = history[-1][0] if history else -math.inf
+            self.trail = history + [pt for pt in self.trail if pt[0] > last]
+            self.trail_loaded = True
+        if not self.trail or self.trail[-1][0] < plane["t"]:
+            self.trail.append((plane["t"], *plane["world"], plane.get("alt")))
+        self.dirty = True
+
+    def draw_selection(self):
+        """The selected aircraft's trail (coloured by altitude) and the route still to fly."""
+        plane = self.fleet.planes.get(self.selected)
+        if not plane:
+            return
+        v, screen = self.view, self.screen
+        lat, lon = self.fleet.position(plane)
+        here = v.to_screen(*geo.to_world(lat, lon))
+        pts = [(v.to_screen(wx, wy), alt) for _, wx, wy, alt in self.trail] + [(here, plane.get("alt"))]
+        for (a, _), (b, alt) in zip(pts, pts[1:]):
+            color = ALT_LUT[max(0, min(len(ALT_LUT) - 1, int(alt or 0) // 500))]
+            pygame.draw.line(screen, color, a, b, 3)
+
+        route = self.card.route
+        dst = (route or {}).get("destination") or {}
+        if dst.get("lat") is not None and route.get("plausible") is not False and not plane.get("gnd"):
+            line = [v.to_screen(*geo.to_world(la, lo)) for la, lo in
+                    geo.great_circle(lat, lon, dst["lat"], dst["lon"])]
+            ui.dashed(screen, (150, 158, 170), line, 2, 3, 5)
 
     # ------------------------------------------------------------ status and buttons
 
     def draw_ui(self):
         screen = self.screen
-        text = self.status_text()
-        if text != self.pill[0]:
-            self.pill = (text, self.font.render(text, True, TEXT))
-        surf = self.pill[1]
-        box = pygame.Rect(12, 12, surf.get_width() + 24, surf.get_height() + 14)
-        pygame.draw.rect(screen, PANEL, box, border_radius=box.height // 2)
-        screen.blit(surf, (box.x + 12, box.y + 7))
+        state, text = self.status_text()
+        surf = ui.text(text, 13)
+        box = pygame.Rect(12, 12, surf.get_width() + 38, 30)
+        pygame.draw.rect(screen, ui.PANEL, box, border_radius=15)
+        dot = {"ok": ui.OK, "stale": ui.WARN, "error": ui.BAD}[state]
+        pygame.draw.circle(screen, dot, (box.x + 15, box.centery), 4)
+        screen.blit(surf, (box.x + 26, box.centery - surf.get_height() // 2))
 
         for rect, kind in ((self.btn_in, "+"), (self.btn_out, "-"), (self.btn_home, "home")):
-            pygame.draw.rect(screen, PANEL, rect, border_radius=8)
+            pygame.draw.rect(screen, ui.PANEL, rect, border_radius=22 if kind == "home" else 8)
+            pygame.draw.rect(screen, ui.LINE, rect, 1, border_radius=22 if kind == "home" else 8)
             cx, cy = rect.center
             if kind == "home":
-                pygame.draw.polygon(screen, TEXT, [(cx, cy - 11), (cx + 11, cy), (cx + 7, cy),
-                                                   (cx + 7, cy + 10), (cx - 7, cy + 10),
-                                                   (cx - 7, cy), (cx - 11, cy)])
+                pygame.draw.polygon(screen, ui.TEXT, [(cx, cy - 11), (cx + 11, cy), (cx + 7, cy),
+                                                      (cx + 7, cy + 10), (cx - 7, cy + 10),
+                                                      (cx - 7, cy), (cx - 11, cy)])
             else:
-                pygame.draw.line(screen, TEXT, (cx - 9, cy), (cx + 9, cy), 3)
+                pygame.draw.line(screen, ui.TEXT, (cx - 9, cy), (cx + 9, cy), 3)
                 if kind == "+":
-                    pygame.draw.line(screen, TEXT, (cx, cy - 9), (cx, cy + 9), 3)
+                    pygame.draw.line(screen, ui.TEXT, (cx, cy - 9), (cx, cy + 9), 3)
+
+        map_w = self.view.w - (card_mod.WIDTH if self.card.open else 0)
+        if self.search_shown:
+            label = ui.text("Search here", 14, (255, 255, 255), True)
+            self.btn_search = pygame.Rect(0, 12, label.get_width() + 44, 40)
+            self.btn_search.centerx = map_w // 2
+            pygame.draw.rect(screen, ui.ACCENT, self.btn_search, border_radius=20)
+            screen.blit(label, label.get_rect(center=self.btn_search.center))
 
         a = self.attribution
-        screen.blit(a, (self.view.w - a.get_width() - 6, self.view.h - a.get_height() - 4))
+        screen.blit(a, (map_w - a.get_width() - 6, self.view.h - a.get_height() - 4))
 
     def status_text(self):
+        """("ok" | "stale" | "error", text) for the pill, as in the browser."""
         last = self.fleet.last_snapshot
         age = time.time() - last if last else math.inf
         stale = age > self.cfg["poll_interval_s"] * 3 + 2
         if not self.status.get("ok") and (stale or not last):
-            return f"No data · last update {fmt_ago(age)}" if last else "No data · retrying"
+            return "error", (f"No data · last update {fmt_ago(age)}" if last else "No data · retrying")
         if not last:
-            return "Connecting…"
+            return "stale", "Connecting…"
         text = f"{self.fleet.source} · {len(self.fleet.planes)} aircraft"
-        return text + (f" · {fmt_ago(age)}" if stale else "")
+        return ("stale", f"{text} · {fmt_ago(age)}") if stale else ("ok", text)
 
     # ------------------------------------------------------------ live area
 
@@ -415,18 +501,40 @@ class App:
     def set_area(self, area):
         self.area = area
         self.link.set_area(*area)
+        lat, lon, r = area
+        self.area_ring = [geo.to_world(*geo.destination(lat, lon, i * 360 / 128, r)) for i in range(129)]
+        self.search_shown = self.area_shown = False
+        self.dirty = True
 
-    def maybe_set_area(self):
-        """Once the view settles, watch it if it's no longer covered (no "Search here" yet)."""
+    def maybe_offer_search(self):
+        """Once the view settles, offer "Search here" if it has left the live area
+        (the old area stays live until it's tapped), as the browser does."""
         if self.pointers or time.monotonic() - self.moved_at < SETTLE_S or self.moved_at == 0:
             return
         self.moved_at = 0
         lat, lon, r = self.area
         v = self.view
+        want = self.view_area()
         covered = all(geo.distance_nm(lat, lon, *v.latlon(x, y)) <= r
                       for x, y in ((0, 0), (v.w, 0), (0, v.h), (v.w, v.h)))
-        if not covered:
-            self.set_area(self.view_area())
+        moved = geo.distance_nm(lat, lon, want[0], want[1]) > 0.05 * r
+        grew = want[2] > r * 1.05
+        self.search_shown = not covered and (moved or grew)
+        self.area_shown = not covered
+        self.dirty = True
+
+    def ring_points(self):
+        """The live area's outline on screen, kept continuous across the antimeridian."""
+        pts = [self.view.to_screen(wx, wy) for wx, wy in self.area_ring]
+        s = self.view.scale
+        for i in range(1, len(pts)):
+            x, y = pts[i]
+            while x - pts[i - 1][0] > s / 2:
+                x -= s
+            while x - pts[i - 1][0] < -s / 2:
+                x += s
+            pts[i] = (x, y)
+        return pts
 
     # ------------------------------------------------------------ input
 
@@ -455,8 +563,10 @@ class App:
         self.pointers[pid] = (x, y)
         if len(self.pointers) == 1:
             self.tap = (x, y)
+            self.drag_card = self.card.open and x >= self.view.w - card_mod.WIDTH
         elif len(self.pointers) == 2:
             self.tap = None
+            self.drag_card = False
             (ax, ay), (bx, by) = list(self.pointers.values())[:2]
             mid = ((ax + bx) / 2, (ay + by) / 2)
             self.pinch = (max(1.0, math.hypot(ax - bx, ay - by)), self.view.z, self.view.to_world(*mid))
@@ -474,6 +584,11 @@ class App:
             d0, z0, anchor = self.pinch
             z = z0 + math.log2(max(1.0, math.hypot(ax - bx, ay - by)) / d0)
             self.view.zoom_about(z, (ax + bx) / 2, (ay + by) / 2, anchor)
+        elif self.drag_card:
+            if not self.tap:
+                self.card.scroll_by(y - py)
+                self.dirty = True
+            return
         elif not self.tap:
             self.view.pan(x - px, y - py)
         self.moved_at = time.monotonic()
@@ -492,7 +607,17 @@ class App:
 
     def on_tap(self, x, y):
         v = self.view
-        if self.btn_in.collidepoint(x, y):
+        self.dirty = True
+        if self.card.open and x >= v.w - card_mod.WIDTH:
+            action = self.card.tap(x - (v.w - card_mod.WIDTH), y)
+            if action == "close":
+                self.select(None)
+            elif action == "refresh":
+                self.card.refresh_times()
+            return
+        if self.search_shown and self.btn_search.collidepoint(x, y):
+            self.set_area(self.view_area())
+        elif self.btn_in.collidepoint(x, y):
             self.zoom_step(1, v.w / 2, v.h / 2)
         elif self.btn_out.collidepoint(x, y):
             self.zoom_step(-1, v.w / 2, v.h / 2)
@@ -500,7 +625,13 @@ class App:
             start = self.cfg["start"]
             self.view = View(v.w, v.h, start["lat"], start["lon"], round(start["zoom"]))
             self.moved_at = time.monotonic()
-        # Tapping a plane opens the status card in the full version (not in this prototype).
+        else:
+            near = [(math.hypot(px - x, py - y), p["hex"]) for px, py, p in self.visible
+                    if abs(px - x) <= HIT_PX and abs(py - y) <= HIT_PX]
+            if near:
+                self.select(min(near)[1])
+            elif self.selected:
+                self.select(None)
 
     def zoom_step(self, dz, x, y):
         self.view.zoom_about(round(self.view.z) + dz, x, y)

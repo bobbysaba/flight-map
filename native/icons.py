@@ -167,8 +167,9 @@ def icon_size(z):
 # ---------------------------------------------------------------- rendering
 
 class Icons:
-    def __init__(self, halo_color):
+    def __init__(self, halo_color, halo_px=HALO_PX):
         self.halo = halo_color
+        self.halo_px = halo_px
         self.upright: dict = {}                 # (shape, k, color) -> 4x surface, nose up
         self.cache: OrderedDict = OrderedDict()  # (shape, k, color, step) -> final sprite
 
@@ -196,7 +197,7 @@ class Icons:
         if surf is not None:
             return surf
         kk = k * SS                                       # supersampled px per unit
-        size = math.ceil(BOX * kk + 2 * HALO_PX * SS) | 1  # odd, so (0, 0) is a pixel centre
+        size = math.ceil(BOX * kk + 2 * self.halo_px * SS) | 1  # odd, so (0, 0) is a pixel centre
         c = size // 2
         mask = pygame.Surface((size, size), pygame.SRCALPHA)
         SHAPES[shape](mask, (255, 255, 255, 255), kk, c)
@@ -204,7 +205,7 @@ class Icons:
         out = pygame.Surface((size, size), pygame.SRCALPHA)
         halo = mask.copy()
         halo.fill((*self.halo, 255), special_flags=pygame.BLEND_RGBA_MIN)
-        r = HALO_PX * SS
+        r = self.halo_px * SS
         for i in range(16):                               # dilate: the halo around the shape
             a = i * math.pi / 8
             out.blit(halo, (round(r * math.cos(a)), round(r * math.sin(a))))

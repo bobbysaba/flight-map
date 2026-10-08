@@ -81,8 +81,10 @@ PI_HOST=flightzero ./deploy.sh install --native
 ssh flightzero journalctl -t flightmap-native -f    # logs, including fps/memory stats every 10 s
 ```
 
-So far: map, live planes, drag, pinch-zoom, +/−, home. Not yet: the status card,
-"Search here" (the live area follows the view automatically), trails.
+It has the browser version's map controls, aircraft silhouettes, status card (photo,
+route, FlightAware times, live values; drag to scroll), trail and route line for the
+tapped aircraft, and "Search here". Not yet: the sources & usage panel behind the
+status pill.
 
 ## Config (`/etc/flight-map/config.toml`)
 

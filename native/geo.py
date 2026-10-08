@@ -22,6 +22,24 @@ def destination(lat, lon, bearing_deg, dist_nm):
     return math.degrees(p2), (math.degrees(l2) + 540) % 360 - 180
 
 
+def great_circle(lat1, lon1, lat2, lon2, steps=64):
+    """(lat, lon) points along the great circle from 1 to 2, longitudes left unwrapped."""
+    p1, l1, p2, l2 = map(math.radians, (lat1, lon1, lat2, lon2))
+    d = 2 * math.asin(math.sqrt(math.sin((p2 - p1) / 2) ** 2 +
+                                math.cos(p1) * math.cos(p2) * math.sin((l2 - l1) / 2) ** 2))
+    if d == 0:
+        return [(lat1, lon1)]
+    pts = []
+    for i in range(steps + 1):
+        f = i / steps
+        a, b = math.sin((1 - f) * d) / math.sin(d), math.sin(f * d) / math.sin(d)
+        x = a * math.cos(p1) * math.cos(l1) + b * math.cos(p2) * math.cos(l2)
+        y = a * math.cos(p1) * math.sin(l1) + b * math.cos(p2) * math.sin(l2)
+        z = a * math.sin(p1) + b * math.sin(p2)
+        pts.append((math.degrees(math.atan2(z, math.hypot(x, y))), math.degrees(math.atan2(y, x))))
+    return pts
+
+
 # Mercator in "world units": the whole world is 0..1 on both axes, y down.
 MAX_LAT = 85.0511
 
