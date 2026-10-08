@@ -29,6 +29,7 @@ import ui
 from card import Card
 from fleet import CORRECTION_S, Fleet
 from link import Link
+from status import StatusPanel
 from tiles import Tiles
 
 log = logging.getLogger("flightmap.native")
@@ -174,6 +175,8 @@ class App:
         self.icons = icons.Icons(HALO)
         self.icons_selected = icons.Icons((255, 255, 255), halo_px=2.2)
         self.card = Card(args.server, h)
+        self.status_panel = StatusPanel(args.server, (w, h))
+        self.pill_rect = pygame.Rect(0, 0, 0, 0)
         self.selected = None         # hex of the tapped aircraft
         self.trail = []              # its track: (t, world x, world y, alt)
         self.trail_loaded = False    # merged in the service's history yet?
@@ -218,7 +221,7 @@ class App:
             self.handle(e)
         self.drain_inbox()
         self.maybe_offer_search()
-        if self.card.poll():
+        if self.card.poll() | self.status_panel.poll():
             self.dirty = True
         now = time.monotonic()
         if now - self.tick_at >= 1:
@@ -244,6 +247,7 @@ class App:
         drawn = self.draw_planes()
         self.draw_ui()
         self.card.draw(self.screen)
+        self.status_panel.draw(self.screen)
         pygame.display.flip()
         self.record(time.perf_counter() - started, drawn)
 
@@ -447,7 +451,7 @@ class App:
         screen = self.screen
         state, text = self.status_text()
         surf = ui.text(text, 13)
-        box = pygame.Rect(12, 12, surf.get_width() + 38, 30)
+        box = self.pill_rect = pygame.Rect(12, 12, surf.get_width() + 38, 30)
         pygame.draw.rect(screen, ui.PANEL, box, border_radius=15)
         dot = {"ok": ui.OK, "stale": ui.WARN, "error": ui.BAD}[state]
         pygame.draw.circle(screen, dot, (box.x + 15, box.centery), 4)
@@ -556,7 +560,7 @@ class App:
             self.pointer_move("mouse", *e.pos)
         elif e.type == pygame.MOUSEBUTTONUP and e.button == 1 and "mouse" in self.pointers:
             self.pointer_up("mouse", *e.pos)
-        elif e.type == pygame.MOUSEWHEEL and e.y:
+        elif e.type == pygame.MOUSEWHEEL and e.y and not self.status_panel.is_open:
             self.zoom_step(1 if e.y > 0 else -1, *pygame.mouse.get_pos())
 
     def pointer_down(self, pid, x, y):
@@ -579,6 +583,8 @@ class App:
         if self.tap and math.hypot(x - self.tap[0], y - self.tap[1]) > TAP_PX:
             px, py = self.tap   # it's a drag after all: pan from where it started
             self.tap = None
+        if self.status_panel.is_open:
+            return              # the panel covers the map: no panning or zooming under it
         if self.pinch and len(self.pointers) >= 2:
             (ax, ay), (bx, by) = list(self.pointers.values())[:2]
             d0, z0, anchor = self.pinch
@@ -596,10 +602,11 @@ class App:
     def pointer_up(self, pid, x, y):
         self.pointers.pop(pid, None)
         if self.pinch and len(self.pointers) < 2:
-            # Settle on a whole zoom level so tiles are drawn crisp, at their real size.
             self.pinch = None
-            self.view.zoom_about(round(self.view.z), x, y)
-            self.moved_at = time.monotonic()
+            if not self.status_panel.is_open:
+                # Settle on a whole zoom level so tiles are drawn crisp, at their real size.
+                self.view.zoom_about(round(self.view.z), x, y)
+                self.moved_at = time.monotonic()
         if not self.pointers and self.tap:
             self.on_tap(*self.tap)
         if not self.pointers:
@@ -608,6 +615,12 @@ class App:
     def on_tap(self, x, y):
         v = self.view
         self.dirty = True
+        if self.status_panel.is_open:
+            self.status_panel.tap(x, y)
+            return
+        if self.pill_rect.collidepoint(x, y):
+            self.status_panel.open()
+            return
         if self.card.open and x >= v.w - card_mod.WIDTH:
             action = self.card.tap(x - (v.w - card_mod.WIDTH), y)
             if action == "close":

@@ -83,7 +83,7 @@ ssh flightzero journalctl -t flightmap-native -f    # logs, including fps/memory
 
 It has the browser version's map controls, aircraft silhouettes, status card (photo,
 route, FlightAware times, live values; drag to scroll), trail and route line for the
-tapped aircraft, and "Search here". Not yet: the sources & usage panel behind the
+tapped aircraft, "Search here", and the sources & AeroAPI usage panel behind the
 status pill.
 
 ## Config (`/etc/flight-map/config.toml`)
